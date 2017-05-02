@@ -1,0 +1,493 @@
+﻿<#@ template debug="false" hostspecific="true" language="C#" #>
+<#@ assembly name="System.Core" #>
+<#@ assembly name="System.Data.Entity.Design" #>
+<#@ assembly name="System.ComponentModel.DataAnnotations" #>
+<#@ assembly name="EnvDTE" #>
+<#@ import namespace="System" #>
+<#@ import namespace="System.Linq" #>
+<#@ import namespace="System.Text" #>
+<#@ import namespace="System.IO" #>
+<#@ import namespace="System.Collections.Generic" #>
+<#@ import namespace="System.Data.Entity.Design.PluralizationServices" #>
+<#@ import namespace="System.Globalization" #>
+<#@ import namespace="System.ComponentModel.DataAnnotations.Schema" #>
+<#@ import namespace="System.Reflection" #>
+<#@ import namespace="System.ComponentModel.DataAnnotations" #>
+<#@ import namespace="EnvDTE" #>
+<#@ output extension=".cs" #>
+
+<#
+	string entitiesContext = "MovieContext";
+	string entitiesNamespace = "NPBaseRepo.Models.Entities";
+	string entitiesProject = "NPBaseRepo";
+	string entitiesFolder = "Models\\Entities";
+	string fileNamespace = "NPBaseRepo.Repository";
+
+	var serviceProvider = (IServiceProvider)this.Host;
+	var dte = (DTE)serviceProvider.GetService(typeof(DTE));
+
+	var entityTypes = GetDefinedTypes(dte, entitiesProject, entitiesFolder);
+#>
+
+using System;
+using System.Linq;
+using <#= entitiesNamespace #>;
+using System.Collections.Generic;
+
+namespace <#= fileNamespace #>
+{
+	public partial interface IDataRepository : IDisposable
+	{
+		/// <summary>
+        /// Saves the current changes
+        /// </summary>
+		void Save();
+
+		<#
+			foreach(var entityType in entityTypes)
+			{
+				string pluralName = GetPlural(entityType.Name);
+				var properties = entityType.Members.OfType<CodeProperty>().Where(w => !w.Attributes.OfType<CodeAttribute>().Any(a => a.Name == "NotMapped"));
+				var stringProperties = properties.Where(w => w.Type.AsString == "string");
+				var primaryKeyProperty = properties.FirstOrDefault(f => f.Attributes.OfType<CodeAttribute>().Any(a => a.Name == "Key"));
+		#>
+		#region <#= pluralName #>
+
+		/// <summary>
+        /// Returns a query for <#= pluralName #>
+        /// </summary>
+        /// <param name="includeTracking">Indicates if the returned entities must be tracked</param>
+        /// <returns>The query</returns>
+		IQueryable<<#= entityType.Name #>> Get<#= pluralName #>(bool includeTracking = false);
+		<#
+				if(stringProperties.Any())
+				{
+		#>
+
+		/// <summary>
+        /// Returns a search query for <#= pluralName #>
+        /// </summary>
+        /// <param name="searchTerm">The term to search for</param>
+        /// <returns>The query</returns>
+		IQueryable<<#= entityType.Name #>> Search<#= pluralName #>(string searchTerm);
+		<#
+				}
+		#>
+
+		/// <summary>
+        /// Returns a <#= entityType.Name #> entity
+        /// </summary>
+        /// <param name="id">The primary key of the entity</param>
+        /// <returns>The entity or null if it was not found</returns>
+		<#= entityType.Name #> Get<#= entityType.Name #>(<#= primaryKeyProperty.Type.AsString #> id);
+
+		/// <summary>
+        /// Adds a new <#= entityType.Name #> entity
+        /// </summary>
+        /// <param name="model">The <#= entityType.Name #> entity to add</param>
+		void Add(<#= entityType.Name #> model);
+
+		/// <summary>
+        /// Deletes a <#= entityType.Name #> entity
+        /// </summary>
+        /// <param name="model">The <#= entityType.Name #> entity to delete</param>
+		void Delete(<#= entityType.Name #> model);
+
+		#endregion
+
+		<#
+			}
+		#>
+
+		/// <summary>
+        /// Deletes all the data from the database. CAUTION: Only used for integration tests
+        /// </summary>
+        void ResetDatabase();
+	}
+
+	public abstract class DataRepositoryBase
+	{
+		private <#= entitiesContext #> _db;
+        protected <#= entitiesContext #> Db
+        {
+            get
+            {
+                if (_db == null)
+                {
+                    _db = new <#= entitiesContext #>();
+                    _db.Configuration.ValidateOnSaveEnabled = false;
+                }
+
+                return _db;
+            }
+        }
+
+		/// <summary>
+        /// Disposes the repository
+        /// </summary>
+        public void Dispose()
+        {
+            if (_db != null)
+            {
+                _db.Dispose();
+                _db = null;
+            }
+        }
+
+		/// <summary>
+        /// Saves the current changes
+        /// </summary>
+        public void Save()
+        {
+            if (_db != null)
+            {
+                _db.SaveChanges();
+            }
+        }
+
+		/// <summary>
+        /// Deletes all the data from the database. CAUTION: Only used for integration tests
+        /// </summary>
+        public void ResetDatabase()
+		{
+		<#
+			foreach(var entityType in entityTypes)
+			{
+				string pluralName = GetPlural(entityType.Name);
+		#>
+			Db.<#= pluralName #>.RemoveRange(Db.<#= pluralName #>.ToList());
+		<#
+			}
+		#>
+			Save();
+		}
+
+		<#
+			foreach(var entityType in entityTypes)
+			{
+				string pluralName = GetPlural(entityType.Name);
+				var properties = entityType.Members.OfType<CodeProperty>().Where(w => !w.Attributes.OfType<CodeAttribute>().Any(a => a.Name == "NotMapped"));
+				var stringProperties = properties.Where(w => w.Type.AsString == "string");
+				var primaryKeyProperty = properties.FirstOrDefault(f => f.Attributes.OfType<CodeAttribute>().Any(a => a.Name == "Key"));
+
+				string searchQuery = string.Join(" || ", stringProperties.Select(s => "(w." + s.Name + " != null && w." + s.Name + ".Contains(searchTerm))"));
+		#>
+		#region <#= pluralName #>
+
+		/// <summary>
+        /// Returns a query for <#= pluralName #>
+        /// </summary>
+        /// <param name="includeTracking">Indicates if the returned entities must be tracked</param>
+        /// <returns>The query</returns>
+		public virtual IQueryable<<#= entityType.Name #>> Get<#= pluralName #>(bool includeTracking = false)
+		{
+			<#
+				if(properties.Any(a => a.Name == "IsDeleted"))
+				{
+			#>
+			if (includeTracking)
+            {
+                return Db.<#= pluralName #>.Where(w => !w.IsDeleted);
+            }
+
+            return Db.<#= pluralName #>.AsNoTracking().Where(w => !w.IsDeleted);
+			<#
+				}
+				else
+				{
+			#>
+			if (includeTracking)
+            {
+                return Db.<#= pluralName #>;
+            }
+
+            return Db.<#= pluralName #>.AsNoTracking();
+			<#
+				}
+			#>
+		}
+
+		<#
+			if(stringProperties.Any())
+			{
+		#>
+
+		/// <summary>
+        /// Applies a search query, for <#= pluralName #>, to an existing query
+        /// </summary>
+		/// <param name="query">The query to apply the search to</param>
+        /// <param name="searchTerm">The term to search for</param>
+        /// <returns>The query</returns>
+		protected virtual IQueryable<<#= entityType.Name #>> Search<#= pluralName #>Query(IQueryable<<#= entityType.Name #>> query, string searchTerm)
+		{
+			return query.Where(w => <#= searchQuery #>);
+		}
+
+		/// <summary>
+        /// Returns a search query for <#= pluralName #>
+        /// </summary>
+        /// <param name="searchTerm">The term to search for</param>
+        /// <returns>The query</returns>
+		public virtual IQueryable<<#= entityType.Name #>> Search<#= pluralName #>(string searchTerm)
+		{
+			return Search<#= pluralName #>Query(Get<#= pluralName #>(), searchTerm);
+		}
+
+		<#
+			}
+		#>
+
+		/// <summary>
+        /// Returns a <#= entityType.Name #> entity
+        /// </summary>
+        /// <param name="id">The primary key of the entity</param>
+        /// <returns>The entity or null if it was not found</returns>
+		public virtual <#= entityType.Name #> Get<#= entityType.Name #>(<#= primaryKeyProperty.Type.AsString #> id)
+		{
+		<#
+			if(properties.Any(a => a.Name == "IsDeleted"))
+			{
+		#>
+			var model = Db.<#= pluralName #>.Find(id);
+			if(model != null && model.IsDeleted)
+			{
+				model = null;
+			}
+
+			return model;
+		<#		
+			}
+			else
+			{
+		#>
+			return Db.<#= pluralName #>.Find(id);
+		<#
+			}
+		#>
+		}
+
+		/// <summary>
+        /// Adds a new <#= entityType.Name #> entity
+        /// </summary>
+        /// <param name="model">The <#= entityType.Name #> entity to add</param>
+		public virtual void Add(<#= entityType.Name #> model)
+		{
+			Db.<#= pluralName #>.Add(model);
+		}
+
+		/// <summary>
+        /// Deletes a <#= entityType.Name #> entity
+        /// </summary>
+        /// <param name="model">The <#= entityType.Name #> entity to delete</param>
+		public virtual void Delete(<#= entityType.Name #> model)
+		{
+		<#
+			if(properties.Any(a => a.Name == "IsDeleted"))
+			{
+		#>
+			model.IsDeleted = true;
+		<#		
+			}
+			else
+			{
+		#>
+			Db.<#= pluralName #>.Remove(model);
+		<#
+			}
+		#>
+		}
+
+		#endregion
+
+		<#
+			}
+		#>
+	}
+
+	public abstract class FakeDataRepositoryBase
+	{
+		/// <summary>
+        /// Saves the current changes
+        /// </summary>
+		public void Save()
+        {
+
+        }
+
+		/// <summary>
+        /// Disposes the repository
+        /// </summary>
+        public void Dispose()
+        {
+
+        }
+
+		/// <summary>
+        /// Deletes all the data from the database. CAUTION: Only used for integration tests
+        /// </summary>
+        public void ResetDatabase()
+		{
+
+		}
+
+		<#
+			foreach(var entityType in entityTypes)
+			{
+				string pluralName = GetPlural(entityType.Name);
+				var properties = entityType.Members.OfType<CodeProperty>().Where(w => !w.Attributes.OfType<CodeAttribute>().Any(a => a.Name == "NotMapped"));
+				var stringProperties = properties.Where(w => w.Type.AsString == "string");
+				var primaryKeyProperty = properties.FirstOrDefault(f => f.Attributes.OfType<CodeAttribute>().Any(a => a.Name == "Key"));
+
+				string searchQuery = string.Join(" || ", stringProperties.Select(s => "(w." + s.Name + " != null && w." + s.Name + ".Contains(searchTerm))"));
+		#>
+		#region <#= pluralName #>
+
+		protected List<<#= entityType.Name #>> <#= pluralName #> = new List<<#= entityType.Name #>>();
+
+		/// <summary>
+        /// Returns a query for <#= pluralName #>
+        /// </summary>
+        /// <param name="includeTracking">Indicates if the returned entities must be tracked</param>
+        /// <returns>The query</returns>
+		public virtual IQueryable<<#= entityType.Name #>> Get<#= pluralName #>(bool includeTracking = false)
+		{
+			return this.<#= pluralName #>.AsQueryable();
+		}
+
+		<#
+			if(stringProperties.Any())
+			{
+		#>
+
+		/// <summary>
+        /// Returns a search query for <#= pluralName #>
+        /// </summary>
+        /// <param name="searchTerm">The term to search for</param>
+        /// <returns>The query</returns>
+		public virtual IQueryable<<#= entityType.Name #>> Search<#= pluralName #>(string searchTerm)
+		{
+			return this.<#= pluralName #>.Where(w => <#= searchQuery #>).AsQueryable();
+		}
+
+		<#
+			}
+		#>
+
+		/// <summary>
+        /// Returns a <#= entityType.Name #> entity
+        /// </summary>
+        /// <param name="id">The primary key of the entity</param>
+        /// <returns>The entity or null if it was not found</returns>
+		public virtual <#= entityType.Name #> Get<#= entityType.Name #>(<#= primaryKeyProperty.Type.AsString #> id)
+		{
+			return this.<#= pluralName #>.FirstOrDefault(f => f.<#= primaryKeyProperty.Name #> == id);
+		}
+
+		/// <summary>
+        /// Adds a new <#= entityType.Name #> entity
+        /// </summary>
+        /// <param name="model">The <#= entityType.Name #> entity to add</param>
+		public virtual void Add(<#= entityType.Name #> model)
+		{
+			this.<#= pluralName #>.Add(model);
+		}
+
+		/// <summary>
+        /// Deletes a <#= entityType.Name #> entity
+        /// </summary>
+        /// <param name="model">The <#= entityType.Name #> entity to delete</param>
+		public virtual void Delete(<#= entityType.Name #> model)
+		{
+			this.<#= pluralName #>.Remove(model);
+		}
+
+		#endregion
+
+		<#
+			}
+		#>
+	}
+}
+
+<#+
+	string GetPlural(string text)
+	{
+		var cultureInfo = new CultureInfo("en-us");
+		var ps = PluralizationService.CreateService(cultureInfo);
+
+		if(text.EndsWith("us"))
+		{
+			text += "es";
+		}
+		else if(text.EndsWith("Criterion"))
+		{
+			text = text.Replace("Criterion", "Criteria");
+		}
+		else
+		{
+			text = ps.Pluralize(text);
+		}
+
+		return text;
+	}
+
+	ProjectItem GetProjectItem(ProjectItem projectItem, string absolutePath)
+	{
+	    foreach(ProjectItem item in projectItem.ProjectItems)
+	    {
+	        if(item.FileNames[0].Equals(absolutePath, StringComparison.OrdinalIgnoreCase))
+			{
+				return item;
+			}
+			else if(absolutePath.StartsWith(item.FileNames[0]))
+			{
+				ProjectItem result = GetProjectItem(item, absolutePath);
+				if(result != null)
+				{
+					return result;
+				}
+			}
+	    }
+        
+	    return null;
+	}
+
+	ProjectItem GetProjectItem(DTE dte, string projectName, string folder)
+	{
+		var project = dte.Solution.OfType<Project>().FirstOrDefault(f => f.Name == projectName);
+		var projectDir = Path.GetDirectoryName(project.FileName);
+		var absolutePath = Path.Combine(projectDir, folder) + "\\";
+
+	    foreach(ProjectItem item in project.ProjectItems)
+	    {
+	        if(item.FileNames[0].Equals(absolutePath, StringComparison.OrdinalIgnoreCase))
+			{
+				return item;
+			}
+			else if(absolutePath.StartsWith(item.FileNames[0]))
+			{
+				ProjectItem result = GetProjectItem(item, absolutePath);
+				if(result != null)
+				{
+					return result;
+				}
+			}
+	    }
+        
+	    return null;
+	}
+
+	IEnumerable<CodeType> GetDefinedTypes(DTE dte, string projectName, string folder)
+	{
+		var item = GetProjectItem(dte, projectName, folder);
+		if(item == null)
+		{
+			return new List<CodeType>();
+		}
+
+		var projectItems = item.ProjectItems.OfType<ProjectItem>().Where(w => w.FileCodeModel != null && w.FileCodeModel.CodeElements != null);
+		var nameSpaces = projectItems.SelectMany(s => s.FileCodeModel.CodeElements.OfType<CodeNamespace>());
+		
+		return nameSpaces.SelectMany(s => s.Members.OfType<CodeType>()).Where(w => w.Kind != vsCMElement.vsCMElementEnum);
+	}
+#>

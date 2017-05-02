@@ -1,0 +1,10 @@
+Example/TestResults
+Example/packages
+Example/.vs
+
+Example/NPBaseRepo.Tests/bin
+Example/NPBaseRepo.Tests/obj
+
+Example/NPBaseRepo/bin
+Example/NPBaseRepo/obj
+Example/NPBaseRepo/NPBaseRepo.csproj.user
